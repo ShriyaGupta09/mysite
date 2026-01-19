@@ -1,0 +1,12 @@
+# Node modules
+node_modules
+client/node_modules
+server/node_modules
+
+# Environment files
+.env
+server/firebase-key.json
+
+# Build files
+client/build
+client/.next

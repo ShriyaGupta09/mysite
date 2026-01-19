@@ -1,78 +1,69 @@
-// sde/server/index.js
-require('dotenv').config(); // MUST BE AT THE VERY TOP
-
-const dbURI = process.env.MONGO_URI; 
-if (dbURI) {
-    console.log("✅ MONGO_URI is loaded (starts with:", dbURI.substring(0, 10) + "...)");
-} else {
-    console.log("❌ Error: MONGO_URI is not defined in .env file");
-}
-console.log("⏳ Starting server script...");
-
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
 require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const admin = require('firebase-admin');
+const serviceAccount = require('./firebase-key.json'); // Your downloaded key
+
+// Initialize Firebase
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
+console.log("✅ Connected to Firebase Firestore");
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Import the Profile model
-const Profile = require('./models/Profile');
-
-// Connect to MongoDB
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch(err => console.error("❌ MongoDB Error:", err));
-
-// 1. GET Endpoint: Fetch Profile Data
+// GET Profile
 app.get('/profile', async (req, res) => {
   try {
-    const profile = await Profile.findOne(); // Get the first profile
-    if (!profile) return res.status(404).json({ message: "No profile found" });
+    const snapshot = await db.collection('profile').limit(1).get();
+    if (snapshot.empty) return res.status(404).json({ message: "No profile found" });
+    const profile = snapshot.docs[0].data();
     res.json(profile);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// 2. SEARCH Endpoint: Simple filter
+// SEARCH Endpoint
 app.get('/search', async (req, res) => {
   const { q } = req.query;
   try {
-    // Find a profile where skills OR projects match the query
-    const results = await Profile.find({
-      $or: [
-        { skills: { $regex: q, $options: "i" } },
-        { "projects.title": { $regex: q, $options: "i" } }
-      ]
-    });
+    const snapshot = await db.collection('profile').get();
+    const results = snapshot.docs
+      .map(doc => doc.data())
+      .filter(p => 
+        (p.skills?.some(cat => cat.list.some(skill => skill.toLowerCase().includes(q?.toLowerCase()))) ||
+         p.projects?.some(proj => proj.title.toLowerCase().includes(q?.toLowerCase())))
+      );
     res.json(results);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-const PORT = process.env.PORT || 5000;
-
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: "OK", message: "Server is healthy" });
-});
+// UPDATE / UPSERT Profile
 app.put('/profile', async (req, res) => {
   try {
     const updatedData = req.body;
-    
-    // Find the existing profile and update it
-    // (We use a dummy filter {} because there is only one profile)
-    const result = await Profile.findOneAndUpdate({}, updatedData, { new: true, upsert: true });
-    
-    res.json({ message: "Success", data: result });
+    const collectionRef = db.collection('profile');
+
+    // Clear old profile (if exists)
+    const snapshot = await collectionRef.get();
+    snapshot.docs.forEach(doc => doc.ref.delete());
+
+    // Create new
+    await collectionRef.doc('mainProfile').set(seedData);
+    res.json({ message: "Success", data: updatedData });
   } catch (err) {
-    console.error("Save Error:", err);
-    res.status(500).json({ error: "Could not save data" });
+    res.status(500).json({ error: err.message });
   }
 });
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+
+// Health check
+const PORT = process.env.PORT || 5000;
+app.get('/health', (req, res) => res.status(200).json({ status: "OK", message: "Server is healthy" }));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
